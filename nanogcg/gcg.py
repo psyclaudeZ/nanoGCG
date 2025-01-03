@@ -283,12 +283,6 @@ class GCG:
         before_embeds, after_embeds, target_embeds = [
             embedding_layer(ids) for ids in (before_ids, after_ids, target_ids)
         ]
-        logger.debug(
-            f"ids: {before_ids.size()}, {target_ids.size()}, {after_ids.size()}"
-        )
-        logger.debug(
-            f"embeds: {before_embeds.size()}, {target_embeds.size()}, {after_embeds.size()}"
-        )
 
         # Compute the KV Cache for tokens that appear before the optimized tokens
         if config.use_prefix_cache:
@@ -335,8 +329,6 @@ class GCG:
         for _ in tqdm(range(config.num_steps)):
             # Compute the token gradient
             optim_ids_onehot_grad = self.compute_token_gradient(optim_ids)
-            # torch.Size([1, 20, 50257]) for gpt2, the grad if replacing token i with j of the V.
-            logger.debug(f"optim_ids_onehot_grad: {optim_ids_onehot_grad.size()}")
 
             with torch.no_grad():
 
@@ -361,7 +353,6 @@ class GCG:
                 batch_size = (
                     new_search_width if config.batch_size is None else config.batch_size
                 )
-
                 if self.prefix_cache:
                     input_embeds = torch.cat(
                         [
