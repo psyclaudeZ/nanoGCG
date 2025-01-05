@@ -598,6 +598,7 @@ class GCG:
         probe_losses = self._compute_candidates_loss_original(
             search_batch_size, probe_embeds
         )
+        logger.debug(f"Probe indices: {probe_idxs}")
         logger.debug(f"Probe losses: {probe_losses.size()}")
 
         # Step 3 Compute losses for all candidates with draft model
@@ -677,12 +678,14 @@ class GCG:
         rank_correlation = spearmanr(
             probe_losses.cpu().numpy(), draft_probe_losses.cpu().numpy()
         ).correlation
+        # normalized from [-1, 1] to [0, 1]
+        alpha = (1 + rank_correlation) / 2
 
-        logger.debug(f"Correlation: {rank_correlation}")
+        logger.debug(f"Correlation: {alpha}")
 
         # 5. Filter candidates based on draft model losses
         # FIXME parameterize ratio
-        filtered_size = int((1 - rank_correlation) * B * 0.125)
+        filtered_size = int((1 - alpha) * B * 0.125)
         # filtered_size = int((1 - rank_correlation) * B * self.config.filter_ratio)
         filtered_size = max(1, min(filtered_size, B))
 
