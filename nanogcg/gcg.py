@@ -591,7 +591,6 @@ class GCG:
         probe_losses = self._compute_candidates_loss_original(
             search_batch_size, probe_embeds
         )
-        logger.debug(f"Probe indices: {probe_idxs}")
         logger.debug(f"Probe losses: {probe_losses.size()}")
 
         # Step 3 Compute losses for all candidates with draft model
