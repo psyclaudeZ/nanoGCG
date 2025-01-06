@@ -668,6 +668,10 @@ class GCG:
 
         # Step 4. Calculate agreement score using Spearman correlation
         draft_probe_losses = draft_losses[probe_idxs]
+        logger.debug(f"picked sampled: {draft_sampled_ids[probe_idxs]}")
+        logger.debug(self.draft_tokenizer.batch_decode(draft_sampled_ids[probe_idxs]))
+        logger.debug(self.tokenizer.batch_decode(sampled_ids[probe_idxs]))
+        logger.debug(f"picked input embed: {input_embeds[probe_idxs]}")
         rank_correlation = spearmanr(
             probe_losses.cpu().numpy(), draft_probe_losses.cpu().numpy()
         ).correlation
