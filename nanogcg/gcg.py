@@ -215,7 +215,7 @@ class GCG:
             if self.draft_tokenizer.pad_token is None:
                 self.draft_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
             # TODO not sure if needed
-            self.draft_model.eval()
+            # self.draft_model.eval()
 
         if model.dtype in (torch.float32, torch.float64):
             logger.warning(
@@ -307,13 +307,23 @@ class GCG:
                 [target], add_special_tokens=False, return_tensors="pt"
             )["input_ids"].to(model.device, torch.int64)
 
+            (
+                self.draft_before_embeds,
+                self.draft_after_embeds,
+                self.draft_target_embeds,
+            ) = [
+                self.draft_embedding_layer(ids)
+                for ids in (
+                    self.draft_before_ids,
+                    self.draft_after_ids,
+                    self.draft_target_ids,
+                )
+            ]
+
             if config.use_prefix_cache:
                 with torch.no_grad():
-                    draft_before_embeds = self.draft_embedding_layer(
-                        self.draft_before_ids
-                    )
                     output = self.draft_model(
-                        inputs_embeds=draft_before_embeds, use_cache=True
+                        inputs_embeds=self.draft_before_embeds, use_cache=True
                     )
                     self.draft_prefix_cache = output.past_key_values
 
@@ -599,13 +609,14 @@ class GCG:
         with torch.no_grad():
             draft_losses = []
             draft_prefix_cache_batch = None
+            logger.debug(
+                f"B: {B}, search_batch_size: {search_batch_size}, draft_sampled_ids: {draft_sampled_ids.shape}, before-target-after: {self.draft_before_ids.shape}, {self.draft_target_ids.shape}, {self.draft_after_ids.shape}"
+            )
             for i in range(0, B, search_batch_size):
                 batch_size = min(search_batch_size, B - i)
-                batch_ids = draft_sampled_ids[i : i + batch_size]
+                # batch_ids = draft_sampled_ids[i : i + batch_size]
 
-                # Use draft model's own embeddings
                 if self.draft_prefix_cache:
-                    # Only recompute expanded cache if needed
                     if not draft_prefix_cache_batch or batch_size != search_batch_size:
                         draft_prefix_cache_batch = [
                             [
@@ -614,39 +625,97 @@ class GCG:
                             ]
                             for i in range(len(self.draft_prefix_cache))
                         ]
-                    draft_input = torch.cat(
+                    logger.debug("fuckkk")
+                    logger.debug(
+                        self.draft_embedding_layer(draft_sampled_ids[probe_idxs]).shape
+                    )
+                    logger.debug("fuck")
+                    draft_embeds = torch.cat(
                         [
-                            batch_ids,
-                            self.draft_after_ids.repeat(batch_size, 1),
-                            self.draft_target_ids.repeat(batch_size, 1),
+                            self.draft_embedding_layer(draft_sampled_ids),
+                            self.draft_after_embeds.repeat(batch_size, 1, 1),
+                            self.draft_target_embeds.repeat(batch_size, 1, 1),
                         ],
                         dim=1,
                     )
-                else:
-                    draft_input = torch.cat(
-                        [
-                            self.draft_before_ids.repeat(batch_size, 1),
-                            batch_ids,
-                            self.draft_after_ids.repeat(batch_size, 1),
-                            self.draft_target_ids.repeat(batch_size, 1),
-                        ],
-                        dim=1,
-                    )
-
-                # Get embeddings using draft model's embedding layer
-                draft_embeds = self.draft_embedding_layer(draft_input)
-
-                # Forward pass with draft model
-                if self.draft_prefix_cache:
                     draft_output = self.draft_model(
                         inputs_embeds=draft_embeds,
                         past_key_values=draft_prefix_cache_batch,
                     )
                 else:
+                    logger.debug(
+                        self.draft_before_embeds.repeat(batch_size, 1, 1).shape
+                    )
+                    logger.debug(self.draft_after_embeds.repeat(batch_size, 1, 1).shape)
+                    logger.debug(
+                        self.draft_target_embeds.repeat(batch_size, 1, 1).shape
+                    )
+                    logger.debug(self.draft_embedding_layer(draft_sampled_ids).shape)
+                    logger.debug(draft_sampled_ids.shape)
+                    draft_embeds = torch.cat(
+                        [
+                            self.draft_before_embeds.repeat(batch_size, 1, 1),
+                            self.draft_embedding_layer(draft_sampled_ids),
+                            self.draft_after_embeds.repeat(batch_size, 1, 1),
+                            self.draft_target_embeds.repeat(batch_size, 1, 1),
+                        ],
+                        dim=1,
+                    )
                     draft_output = self.draft_model(inputs_embeds=draft_embeds)
 
+                # Use draft model's own embeddings
+                # if self.draft_prefix_cache:
+                #     # Only recompute expanded cache if needed
+                #     if not draft_prefix_cache_batch or batch_size != search_batch_size:
+                #         draft_prefix_cache_batch = [
+                #             [
+                #                 x.expand(batch_size, -1, -1, -1)
+                #                 for x in self.draft_prefix_cache[i]
+                #             ]
+                #             for i in range(len(self.draft_prefix_cache))
+                #         ]
+                #     draft_input = torch.cat(
+                #         [
+                #             batch_ids,
+                #             self.draft_after_ids.repeat(batch_size, 1),
+                #             self.draft_target_ids.repeat(batch_size, 1),
+                #         ],
+                #         dim=1,
+                #     )
+                # else:
+                #     draft_input = torch.cat(
+                #         [
+                #             self.draft_before_ids.repeat(batch_size, 1),
+                #             batch_ids,
+                #             self.draft_after_ids.repeat(batch_size, 1),
+                #             self.draft_target_ids.repeat(batch_size, 1),
+                #         ],
+                #         dim=1,
+                #     )
+
+                # logger.debug(f"Draft input shape: {draft_input.shape}")
+                # logger.debug(f"Draft input type: {draft_input.dtype}")
+                # logger.debug(f"Draft input device: {draft_input.device}")
+                # logger.debug(
+                #     f"Draft input: {draft_input}, {draft_input.max},{draft_input.min}"
+                # )
+                # logger.debug("checkpoint")
+                # try:
+                #     # Get embeddings using draft model's embedding layer
+                #     draft_embeds = self.draft_embedding_layer(draft_input)
+                # except Exception as e:
+                #     logger.debug(f"Draft input: {draft_input}")
+                #     logger.debug(self.draft_before_ids.repeat(batch_size, 1))
+                #     logger.debug(batch_ids)
+                #     logger.debug(self.draft_after_ids.repeat(batch_size, 1))
+                #     logger.debug(self.draft_target_ids.repeat(batch_size, 1))
+                #     logger.exception(e)
+                #     raise e
+
+                # Forward pass with draft model
+
                 draft_logits = draft_output.logits
-                tmp = draft_input.shape[1] - self.draft_target_ids.shape[1]
+                tmp = draft_embeds.shape[1] - self.draft_target_ids.shape[1]
                 shift_logits = draft_logits[..., tmp - 1 : -1, :].contiguous()
                 shift_labels = self.draft_target_ids.repeat(batch_size, 1)
 
@@ -663,17 +732,30 @@ class GCG:
 
                 draft_losses.append(loss)
 
-        draft_losses = torch.cat(draft_losses)
+        draft_losses = torch.cat(draft_losses)  # .to(probe_idxs.device)
+        logger.debug(f"draft_losses shape: {draft_losses.shape}")
+        logger.debug(f"probe_idxs shape: {probe_idxs.shape}")
+        logger.debug(f"probe_idxs min: {probe_idxs.min()}, max: {probe_idxs.max()}")
+        logger.debug(
+            f"probe_idxs device: {probe_idxs.device}, draft_losses device: {draft_losses.device}"
+        )
+
+        # Ensure probe_idxs is on the same device as draft_losses
+        # probe_idxs = probe_idxs.to(draft_losses.device)
+        logger.debug(
+            f"probe_idxs device: {probe_idxs.device}, draft_losses device: {draft_losses.device}"
+        )
+
         logger.debug(f"Draft_losses: {draft_losses.size()}")
 
         # Step 4. Calculate agreement score using Spearman correlation
         draft_probe_losses = draft_losses[probe_idxs]
-        logger.debug(f"picked sampled: {draft_sampled_ids[probe_idxs]}")
         logger.debug(self.draft_tokenizer.batch_decode(draft_sampled_ids[probe_idxs]))
         logger.debug(self.tokenizer.batch_decode(sampled_ids[probe_idxs]))
-        logger.debug(f"picked input embed: {input_embeds[probe_idxs]}")
+        # logger.debug(f"picked input embed: {input_embeds[probe_idxs]}")
         rank_correlation = spearmanr(
-            probe_losses.cpu().numpy(), draft_probe_losses.cpu().numpy()
+            probe_losses.cpu().type(torch.float32).numpy(),
+            draft_probe_losses.cpu().type(torch.float32).numpy(),
         ).correlation
         # normalized from [-1, 1] to [0, 1]
         alpha = (1 + rank_correlation) / 2
@@ -791,35 +873,8 @@ class GCG:
             add_special_tokens=False,
             padding=True,
             return_tensors="pt",
-        )["input_ids"].to(token_ids.device, torch.int64)
-        logger.debug(f"Converted token IDs to convert: {ret.size()}")
-        return ret
-        # logger.debug(f"token IDs to convert: {token_ids.size()}, {token_ids}")
-        # batch_size, seq_length = token_ids.shape
-
-        # # Process each sequence in the batch
-        # converted_tokens = []
-        # for batch_idx in range(batch_size):
-        #     # Decode single sequence
-        #     decoded_text = self.tokenizer.decode(token_ids[batch_idx])
-
-        #     assert self.draft_tokenizer, "Draft tokenizer wasn't properly initialized."
-
-        #     print(str(batch_idx) + ":::::::::::::::")
-        #     print(decoded_text)
-        #     # Convert to draft tokens
-        #     draft_tokens = self.draft_tokenizer(
-        #         decoded_text, add_special_tokens=False, return_tensors="pt"
-        #     )["input_ids"].to(token_ids.device, torch.int64)
-
-        #     print(token_ids[batch_idx])
-        #     print(decoded_text))
-        #     print(draft_tokens)
-        #     converted_tokens.append(draft_tokens)
-
-        # # Stack all sequences back together
-        # ret = torch.cat(converted_tokens, dim=0)
-        # logger.debug(f"Converted token IDs to convert: {ret.size()}, {ret}")
+        )["input_ids"].to(self.draft_model.device, torch.int64)
+        logger.debug(f"Converted token IDs: {ret.size()}")
         return ret
 
 
