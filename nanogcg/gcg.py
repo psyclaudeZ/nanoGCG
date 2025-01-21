@@ -216,9 +216,8 @@ class GCG:
             self.draft_embedding_layer = self.draft_model.get_input_embeddings()
             if self.draft_tokenizer.pad_token is None:
                 # TODO document why
-                # self.draft_tokenizer.pad_token = tokenizer.eos_token
-                self.draft_tokenizer.pad_token = " x"
-                # self.draft_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+                self.draft_tokenizer.pad_token = " x"  # tokenizer.eos_token
+            # self.draft_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
             # TODO not sure if needed
             # self.draft_model.eval()
 
@@ -714,12 +713,17 @@ class GCG:
         def _convert_to_draft_tokens(token_ids: Tensor) -> Tensor:
             decoded_text_list = self.tokenizer.batch_decode(token_ids)
             assert self.draft_tokenizer, "Draft tokenizer wasn't properly initialized."
-            return self.draft_tokenizer(
-                decoded_text_list,
-                add_special_tokens=False,
-                padding=True,
-                return_tensors="pt",
-            )["input_ids"].to(self.draft_model.device, torch.int64)
+            try:
+                res = self.draft_tokenizer(
+                    decoded_text_list,
+                    add_special_tokens=False,
+                    padding=True,
+                    return_tensors="pt",
+                )["input_ids"].to(self.draft_model.device, torch.int64)
+            except:
+                logger.debug(decoded_text_list)
+                raise Exception("bleh")
+            return res
 
         with torch.no_grad():
             result_queue = queue.Queue()
@@ -763,6 +767,9 @@ class GCG:
         filtered_size = int((1 - alpha) * B / R)
         filtered_size = max(1, min(filtered_size, B))
 
+        logger.debug(f"Resetting filtered_size to original {B} for debugging purposes")
+        filtered_size = B
+
         _, top_indices = torch.topk(draft_losses, k=filtered_size, largest=False)
 
         # 6. Compute losses on filtered set with target model
@@ -783,6 +790,12 @@ class GCG:
         logger.debug(f"Probe indices: {probe_idxs}")
         logger.debug(f"Top indices: {top_indices}")
         logger.debug(f"Top draft losses: {draft_losses[top_indices]}")
+        logger.debug(
+            f"Top probe candidates: {self.draft_tokenizer.batch_decode(draft_sampled_ids[top_indices])}"
+        )
+        logger.debug(
+            f"Corresponding strings in target space: {self.tokenizer.batch_decode(sampled_ids[top_indices])}"
+        )
         logger.debug(f"Best probe loss: {best_probe_loss}")
         logger.debug(f"Best filtered loss: {best_filtered_loss}")
 
