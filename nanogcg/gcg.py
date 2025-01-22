@@ -215,11 +215,9 @@ class GCG:
             logger.debug("Probe sampling enabled.")
             self.draft_embedding_layer = self.draft_model.get_input_embeddings()
             if self.draft_tokenizer.pad_token is None:
-                # TODO document why
-                self.draft_tokenizer.pad_token = " x"  # tokenizer.eos_token
-            # self.draft_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            # TODO not sure if needed
-            # self.draft_model.eval()
+                # Padding is needed because we'll be tokenizing in both target and draft spaces.
+                # TODO: might be okay to use more generic token such as EOS
+                self.draft_tokenizer.pad_token = " x"
 
         if model.dtype in (torch.float32, torch.float64):
             logger.warning(
@@ -610,7 +608,6 @@ class GCG:
         probe_size = B // self.config.probe_sampling_factor
         probe_idxs = torch.randperm(B)[:probe_size].to(input_embeds.device)
         probe_embeds = input_embeds[probe_idxs]
-        probe_ids = sampled_ids[probe_idxs]
 
         # Helper 1 - Will be executed by probe thread below
         def _compute_probe_losses(
@@ -713,17 +710,12 @@ class GCG:
         def _convert_to_draft_tokens(token_ids: Tensor) -> Tensor:
             decoded_text_list = self.tokenizer.batch_decode(token_ids)
             assert self.draft_tokenizer, "Draft tokenizer wasn't properly initialized."
-            try:
-                res = self.draft_tokenizer(
-                    decoded_text_list,
-                    add_special_tokens=False,
-                    padding=True,
-                    return_tensors="pt",
-                )["input_ids"].to(self.draft_model.device, torch.int64)
-            except:
-                logger.debug(decoded_text_list)
-                raise Exception("bleh")
-            return res
+            return self.draft_tokenizer(
+                decoded_text_list,
+                add_special_tokens=False,
+                padding=True,
+                return_tensors="pt",
+            )["input_ids"].to(self.draft_model.device, torch.int64)
 
         with torch.no_grad():
             result_queue = queue.Queue()
@@ -767,13 +759,9 @@ class GCG:
         filtered_size = int((1 - alpha) * B / R)
         filtered_size = max(1, min(filtered_size, B))
 
-        # logger.debug(f"Resetting filtered_size to original {B} for debugging purposes")
-        # filtered_size = B
-
         _, top_indices = torch.topk(draft_losses, k=filtered_size, largest=False)
 
         # 6. Compute losses on filtered set with target model
-        filtered_ids = sampled_ids[top_indices]
         filtered_embeds = input_embeds[top_indices]
         filtered_losses = self._compute_candidates_loss_original(
             search_batch_size, filtered_embeds
@@ -791,15 +779,11 @@ class GCG:
         logger.debug(f"Probe indices: {probe_idxs}")
         logger.debug(f"Top indices: {top_indices}")
         logger.debug(f"Top draft losses: {draft_losses[top_indices]}")
-        logger.debug(
-            f"Top probe candidates: {self.draft_tokenizer.batch_decode(draft_sampled_ids[top_indices])}"
-        )
-        logger.debug(
-            f"Corresponding strings in target space: {self.tokenizer.batch_decode(sampled_ids[top_indices])}"
-        )
         logger.debug(f"Best probe loss: {best_probe_loss}")
         logger.debug(f"Best filtered loss: {best_filtered_loss}")
 
+        probe_ids = sampled_ids[probe_idxs]
+        filtered_ids = sampled_ids[top_indices]
         return (
             (best_probe_loss, probe_ids[probe_losses.argmin()].unsqueeze(0))
             if best_probe_loss < best_filtered_loss
