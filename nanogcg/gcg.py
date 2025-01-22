@@ -6,7 +6,7 @@ import threading
 
 from dataclasses import dataclass
 from tqdm import tqdm
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import transformers
@@ -391,13 +391,12 @@ class GCG:
                         loss = find_executable_batch_size(
                             self._compute_candidates_loss_original, batch_size
                         )(input_embeds)
+                        current_loss = loss.min().item()
+                        optim_ids = sampled_ids[loss.argmin()].unsqueeze(0)
                     else:
-                        loss = find_executable_batch_size(
+                        current_loss, optim_ids = find_executable_batch_size(
                             self._compute_candidates_loss_probe_sampling, batch_size
                         )(input_embeds, sampled_ids)
-
-                    current_loss = loss.min().item()
-                    optim_ids = sampled_ids[loss.argmin()].unsqueeze(0)
 
                     logger.debug(
                         f"Current loss: {current_loss}, buffer highest: {buffer.get_highest_loss()}"
@@ -597,7 +596,7 @@ class GCG:
         search_batch_size: int,
         input_embeds: Tensor,
         sampled_ids: Tensor,
-    ) -> Tensor:
+    ) -> Tuple[float, Tensor]:
         """Computes the GCG loss on all candidate token id sequences.
 
         Args:
@@ -611,6 +610,7 @@ class GCG:
         probe_size = B // self.config.probe_sampling_factor
         probe_idxs = torch.randperm(B)[:probe_size].to(input_embeds.device)
         probe_embeds = input_embeds[probe_idxs]
+        probe_ids = sampled_ids[probe_idxs]
 
         # Helper 1 - Will be executed by probe thread below
         def _compute_probe_losses(
@@ -767,20 +767,21 @@ class GCG:
         filtered_size = int((1 - alpha) * B / R)
         filtered_size = max(1, min(filtered_size, B))
 
-        logger.debug(f"Resetting filtered_size to original {B} for debugging purposes")
-        filtered_size = B
+        # logger.debug(f"Resetting filtered_size to original {B} for debugging purposes")
+        # filtered_size = B
 
         _, top_indices = torch.topk(draft_losses, k=filtered_size, largest=False)
 
         # 6. Compute losses on filtered set with target model
+        filtered_ids = sampled_ids[top_indices]
         filtered_embeds = input_embeds[top_indices]
         filtered_losses = self._compute_candidates_loss_original(
             search_batch_size, filtered_embeds
         )
 
         # 7. Return best loss between probe set and filtered set
-        best_probe_loss = probe_losses.min()
-        best_filtered_loss = filtered_losses.min()
+        best_probe_loss = probe_losses.min().item()
+        best_filtered_loss = filtered_losses.min().item()
 
         logger.debug(f"Correlation: {alpha}")
         logger.debug(f"Filtered size: {filtered_size}")
@@ -799,7 +800,14 @@ class GCG:
         logger.debug(f"Best probe loss: {best_probe_loss}")
         logger.debug(f"Best filtered loss: {best_filtered_loss}")
 
-        return probe_losses if best_probe_loss < best_filtered_loss else filtered_losses
+        return (
+            (best_probe_loss, probe_ids[probe_losses.argmin()].unsqueeze(0))
+            if best_probe_loss < best_filtered_loss
+            else (
+                best_filtered_loss,
+                filtered_ids[filtered_losses.argmin()].unsqueeze(0),
+            )
+        )
 
     def _compute_candidates_loss_original(
         self,
