@@ -34,6 +34,14 @@ if not logger.hasHandlers():
 
 
 @dataclass
+class ProbeSamplingConfig:
+    draft_model: transformers.PreTrainedModel
+    draft_tokenizer: transformers.PreTrainedTokenizer
+    r: int = 8
+    sampling_factor: int = 16
+
+
+@dataclass
 class GCGConfig:
     num_steps: int = 250
     optim_str_init: Union[str, List[str]] = "x x x x x x x x x x x x x x x x x x x x"
@@ -51,8 +59,7 @@ class GCGConfig:
     add_space_before_target: bool = False
     seed: int = None
     verbosity: str = "INFO"
-    probe_sampling_r: Optional[int] = None
-    probe_sampling_factor: int = 16
+    probe_sampling_config: Optional[ProbeSamplingConfig] = None
 
 
 @dataclass
@@ -189,8 +196,6 @@ class GCG:
         model: transformers.PreTrainedModel,
         tokenizer: transformers.PreTrainedTokenizer,
         config: GCGConfig,
-        draft_model: Optional[transformers.PreTrainedModel],
-        draft_tokenizer: Optional[transformers.PreTrainedTokenizer],
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -207,11 +212,13 @@ class GCG:
 
         self.stop_flag = False
 
-        self.draft_model = draft_model
-        self.draft_tokenizer = draft_tokenizer
+        self.draft_model = None
+        self.draft_tokenizer = None
         self.draft_embedding_layer = None
-        if self.draft_model and self.draft_tokenizer:
+        if self.config.probe_sampling_config:
             logger.debug("Probe sampling enabled.")
+            self.draft_model = self.config.probe_sampling_config.draft_model
+            self.draft_tokenizer = self.config.probe_sampling_config.draft_tokenizer
             self.draft_embedding_layer = self.draft_model.get_input_embeddings()
             if self.draft_tokenizer.pad_token is None:
                 # Padding is needed because we'll be tokenizing in both target and draft spaces.
@@ -589,9 +596,11 @@ class GCG:
             input_embeds : Tensor, shape = (search_width, seq_len, embd_dim)
                 the embeddings of the `search_width` candidate sequences to evaluate
         """
+        probe_sampling_config = self.config.probe_sampling_config
+        assert probe_sampling_config, "Probe sampling config wasn't set up properly."
 
         B = input_embeds.shape[0]
-        probe_size = B // self.config.probe_sampling_factor
+        probe_size = B // probe_sampling_config.sampling_factor
         probe_idxs = torch.randperm(B)[:probe_size].to(input_embeds.device)
         probe_embeds = input_embeds[probe_idxs]
 
@@ -741,7 +750,7 @@ class GCG:
         alpha = (1 + rank_correlation) / 2
 
         # 5. Filter candidates based on draft model losses
-        R = 8 if self.config.probe_sampling_r is None else self.config.probe_sampling_r
+        R = probe_sampling_config.r
         filtered_size = int((1 - alpha) * B / R)
         filtered_size = max(1, min(filtered_size, B))
 
@@ -866,8 +875,6 @@ def run(
     messages: Union[str, List[dict]],
     target: str,
     config: Optional[GCGConfig] = None,
-    draft_model: Optional[transformers.PreTrainedModel] = None,
-    draft_tokenizer: Optional[transformers.PreTrainedTokenizer] = None,
 ) -> GCGResult:
     """Generates a single optimized string using GCG.
 
@@ -886,6 +893,6 @@ def run(
 
     logger.setLevel(getattr(logging, config.verbosity))
 
-    gcg = GCG(model, tokenizer, config, draft_model, draft_tokenizer)
+    gcg = GCG(model, tokenizer, config)
     result = gcg.run(messages, target)
     return result
